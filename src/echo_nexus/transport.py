@@ -9,12 +9,13 @@ import shutil
 import signal
 import socket
 import subprocess
+import time
 import urllib.parse
 from pathlib import Path
 
 import httpx
 
-from .config import state_dir
+from .config import state_dir, register_secret
 
 
 def endpoint(url: str) -> str:
@@ -33,12 +34,16 @@ SYSTEM = ("Eres el neocórtex lingüístico opcional de echo-nexus. Tus respuest
 
 
 class Cortex:
-    def __init__(self, url: str, model: str, key_env: str | None = None, protocol="openai"):
+    def __init__(self, url: str, model: str, key_env: str | None = None, protocol="openai", *, key_file=None, timeout=90, max_tokens=1024):
         self.url = endpoint(url)
         if not model or protocol not in ("openai", "anthropic"):
             raise ValueError("Modelo o protocolo no válido")
         if key_env and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key_env):
             raise ValueError("Indica el NOMBRE de una variable de entorno, no la clave")
+        if key_env and key_file:
+            raise ValueError("Elige una variable o un archivo de clave")
+        self.key_file = str(Path(key_file).expanduser().resolve()) if key_file else None
+        self.timeout, self.max_tokens = timeout, max_tokens
         self.model, self.key_env, self.protocol = model, key_env, protocol
         self.history = []
 
@@ -47,21 +52,38 @@ class Cortex:
         key = os.getenv(self.key_env, "") if self.key_env else ""
         if self.key_env and not key:
             raise ValueError(f"Falta la variable de entorno {self.key_env}")
+        if self.key_file:
+            try:
+                with Path(self.key_file).open() as source:
+                    key = source.read(16385).strip()
+            except OSError:
+                raise ValueError("No se puede abrir el archivo de clave configurado") from None
+            if len(key) > 16384 or not key or "\n" in key or "\r" in key:
+                raise ValueError("El archivo de clave debe contener una sola clave o asignación")
+            # Parse a single assignment without ever executing shell syntax.
+            assignment = re.fullmatch(r"(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=\s*(.*)", key)
+            if assignment:
+                key = assignment[1].strip()
+            if len(key) > 1 and key[0] in ("'", '"') and key[-1] == key[0]:
+                key = key[1:-1]
+            if not key or any(c.isspace() for c in key):
+                raise ValueError("Formato de archivo de clave no válido")
+        register_secret(key)
         history = self.history[-10:] + [{"role": "user", "content": prompt[:24000]}]
         if self.protocol == "anthropic":
             if key:
                 headers["x-api-key"] = key
             headers["anthropic-version"] = "2023-06-01"
-            body = {"model": self.model, "system": SYSTEM, "messages": history, "max_tokens": 1024}
+            body = {"model": self.model, "system": SYSTEM, "messages": history, "max_tokens": self.max_tokens}
             route = "/messages"
         else:
             if key:
                 headers["Authorization"] = "Bearer " + key
             body = {"model": self.model, "messages": [{"role": "system", "content": SYSTEM}] + history,
-                    "stream": False, "max_tokens": 1024}
+                    "stream": False, "max_tokens": self.max_tokens}
             route = "/chat/completions"
         try:
-            async with httpx.AsyncClient(timeout=90, follow_redirects=False) as client:
+            async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=False, trust_env=False) as client:
                 async with client.stream("POST", self.url + route, json=body, headers=headers) as response:
                     if not 200 <= response.status_code < 300:
                         raise RuntimeError(f"La API devolvió HTTP {response.status_code}; revisa URL, modelo y clave")
@@ -87,14 +109,14 @@ class LocalModel:
         self.process = None
         self.log = None
 
-    async def start(self, path):
+    async def start(self, path, *, server=None, progress=None, timeout=300):
         file = Path(path).expanduser().resolve()
         if not file.is_file() or file.suffix.lower() != ".gguf":
             raise ValueError("Indica un archivo .gguf existente")
         with file.open("rb") as f:
             if f.read(4) != b"GGUF":
                 raise ValueError("El archivo no tiene la cabecera GGUF")
-        binary = shutil.which("llama-server")
+        binary = shutil.which(server or os.getenv("ECHO_NEXUS_LLAMA_SERVER", "llama-server"))
         if not binary:
             raise ValueError("Instala llama-server para cargar modelos GGUF")
         await self.close()
@@ -103,26 +125,38 @@ class LocalModel:
             port = sock.getsockname()[1]
         root = state_dir()
         root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self.log_path = root / f"llama-{os.getpid()}.log"
+        self.log_path = root / f"llama-{os.getpid()}-{time.time_ns()}.log"
         self.log = os.fdopen(os.open(self.log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w")
+        # Zero GPU layers alone still permits HIP/CUDA host-operation offload.
+        child_env = dict(os.environ, HIP_VISIBLE_DEVICES="", ROCR_VISIBLE_DEVICES="", CUDA_VISIBLE_DEVICES="")
         self.process = await asyncio.create_subprocess_exec(
             binary, "--model", str(file), "--alias", "echo-local", "--host", "127.0.0.1", "--port", str(port),
-            "--ctx-size", "4096", "--threads", "4", stdout=self.log, stderr=self.log)
-        async def healthy():
-            try:
-                async with httpx.AsyncClient(timeout=1, trust_env=False) as client:
-                    response = await client.get(f"http://127.0.0.1:{port}/health")
-                    return response.status_code == 200
-            except httpx.HTTPError:
-                return False
+            "--ctx-size", "2048", "--threads", "4", "--threads-batch", "4",
+            "--batch-size", "256", "--ubatch-size", "64", "--n-gpu-layers", "0",
+            "--device", "none", "--no-op-offload", env=child_env, stdout=self.log, stderr=self.log)
+        started = time.monotonic()
+        next_notice = 0
         try:
-            for _ in range(180):
-                if self.process.returncode is not None:
-                    raise RuntimeError(f"llama-server terminó; consulta {self.log_path}")
-                if await healthy():
-                    return Cortex(f"http://127.0.0.1:{port}/v1", "echo-local")
-                await asyncio.sleep(1)
-            raise TimeoutError(f"Carga GGUF agotó 180 s; consulta {self.log_path}")
+            async with httpx.AsyncClient(timeout=1, trust_env=False) as client:
+                while time.monotonic() - started < timeout:
+                    elapsed = time.monotonic() - started
+                    if self.process.returncode is not None:
+                        code = self.process.returncode
+                        detail = f"señal {-code}" if code < 0 else f"código {code}"
+                        raise RuntimeError(f"llama-server terminó ({detail}); consulta {self.log_path}")
+                    if progress and elapsed >= next_notice:
+                        progress(f"CPU · cargando {elapsed:.0f} s / {timeout} s · log: {self.log_path}")
+                        next_notice = elapsed + 10
+                    try:
+                        response = await client.get(f"http://127.0.0.1:{port}/health")
+                        if response.status_code == 200:
+                            if progress:
+                                progress(f"Modelo listo en {time.monotonic() - started:.1f} s · CPU")
+                            return Cortex(f"http://127.0.0.1:{port}/v1", "echo-local", timeout=300, max_tokens=256)
+                    except httpx.HTTPError:
+                        pass
+                    await asyncio.sleep(1)
+            raise TimeoutError(f"Carga GGUF agotó {timeout} s; consulta {self.log_path}")
         except BaseException:
             await self.close()
             raise
@@ -156,7 +190,7 @@ class MCP:
             **({"start_new_session": True} if os.name == "posix" else {}))
         try:
             result = await self.request("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
-                "clientInfo": {"name": "echo-nexus", "version": "0.1.0"}})
+                "clientInfo": {"name": "echo-nexus", "version": "0.1.1"}})
             if result.get("protocolVersion") not in ("2025-06-18", "2025-03-26", "2024-11-05", "2025-11-25"):
                 raise ValueError("Versión MCP no compatible")
             self.send({"jsonrpc": "2.0", "method": "notifications/initialized"})

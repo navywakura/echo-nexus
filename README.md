@@ -65,7 +65,7 @@ Export the provider's key in your shell, then launch echo-nexus. Supply the
 ```
 
 The API must implement Chat Completions or Anthropic Messages. Local GGUF
-requires `llama-server` on PATH. It binds to loopback, uses four CPU threads,
+requires `llama-server` on PATH. It binds to loopback, uses four CPU threads, a 2048-token context and small batches,
 and writes its own log. Models are never downloaded automatically.
 Connection configuration is validated immediately; credentials and remote model
 availability are checked on the first message. The harness keeps conversation
@@ -76,6 +76,42 @@ telemetry, files or images. Treat session logs as personal data.
 The neocortex is a language interface. Its text is labeled as a **proposal**;
 it cannot operate motors, execute code, invoke tools or update ECHO facts.
 This does not enable the NEXUS-0 core's optional cortex.
+
+## Saved connections (0.1.1)
+
+```text
+/connect local /path/model.gguf
+/connections save qwen-local
+/connections default qwen-local
+/connections
+/connections use qwen-local
+/connect api https://openrouter.ai/api/v1 openrouter/free @/path/.openrouterkey
+/connections save openrouter
+/connections use openrouter
+/connections default off
+/connections remove openrouter
+```
+
+Profiles survive restarts. They store model settings and the path to a credential
+file or the name of an environment variable, never the credential itself. `@PATH`
+links a single-line key file (a plain key or `export KEY="value"`); it is read only
+when making an API request. It is never executed. File secrets are redacted from
+session output. `/connections` lists profiles without opening their key files.
+[OpenRouter's free router](https://openrouter.ai/openrouter/free) picks an available
+free model; it does not promise a specific model or permanent availability.
+
+`/connections default NAME` reconnects that profile on launch. Use
+`echo-nexus --no-connect` to skip this, or `echo-nexus --connect NAME` to choose
+another saved profile for one launch. Capture mode never auto-connects.
+
+GGUF startup now disables both GPU layers **and host-operation offload**. This
+fixes an observed ROCm/HIP abort during warmup even with zero GPU layers.
+The CPU profile uses context 2048, batches 256/64 and four threads. It retains
+warmup, reports progress every ten seconds, and waits up to 300 seconds. `/logs`
+shows a unique log for each attempt; failures report their exit code or signal.
+Choose a binary with `/connect local PATH --server /path/llama-server` or
+`ECHO_NEXUS_LLAMA_SERVER`. That binary must support `--device none` and
+`--no-op-offload`. Updating the harness requires restarting its running session.
 
 ## MCP and installed agents
 
@@ -94,7 +130,7 @@ server explicitly, then inspect and call its tools:
 MCP tools execute with the connected server's permissions; a tool can modify
 files. Only explicit `/mcp call` commands invoke tools. The neocortex cannot
 invoke them. Stdio protocol versions are negotiated. Streamable HTTP MCP is
-not included in 0.1.0. Current Codex installations may expose app-server
+not included in 0.1.1. Current Codex installations may expose app-server
 instead of the retired MCP server: detection does not claim these protocols
 are interchangeable. Supply a compatible MCP adapter if needed.
 

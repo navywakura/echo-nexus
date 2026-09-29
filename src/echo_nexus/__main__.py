@@ -12,6 +12,8 @@ def main():
     p = argparse.ArgumentParser(description="echo-nexus · developer: rxlabs · open terminal harness")
     p.add_argument("--version", action="version", version=__version__)
     p.add_argument("--doctor", action="store_true", help="Detect local tools without starting them")
+    p.add_argument("--connect", help="Connect a saved profile on startup")
+    p.add_argument("--no-connect", action="store_true", help="Skip automatic saved connection")
     p.add_argument("--backend", help="Operator-provided echo-nexus-backend-v1 manifest")
     p.add_argument("--no-stars", action="store_true", help="Disable decorative animation")
     p.add_argument("--capture", metavar="PATH.svg", help="Capture the real TUI as SVG, headlessly")
@@ -22,7 +24,8 @@ def main():
         print(json.dumps({"harness": __version__, "developer": "rxlabs", "tools": detect()}, indent=2))
         return
     from .app import Nexus
-    app = Nexus(backend=args.backend, stars=not args.no_stars)
+    app = Nexus(backend=args.backend, stars=not args.no_stars, connect=args.connect,
+                autoconnect=not (args.no_connect or args.capture))
     if args.capture:
         width, height = map(int, args.size.split("x"))
         async def capture():

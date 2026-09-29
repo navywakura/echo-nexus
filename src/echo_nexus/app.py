@@ -17,6 +17,7 @@ from textual.widgets import Footer, Input, RichLog, Static
 from . import __version__
 from .backend import Runner, Tail, demo_test, read_manifest
 from .commands import COMMANDS, matches
+from .connections import parse, profile, describe, name as connection_name
 from .config import SessionLog, detect, load_config, redact, save_config, state_dir
 from .transport import Cortex, LocalModel, MCP
 from .visual import grid_text, image_text, telemetry_tree
@@ -53,7 +54,7 @@ class Nexus(App):
                 Binding("f1", "help", "Ayuda"), Binding("f2", "tree", "Telemetría"),
                 Binding("tab", "complete", "Completar", priority=True)]
 
-    def __init__(self, backend=None, stars=True):
+    def __init__(self, backend=None, stars=True, connect=None, autoconnect=True):
         super().__init__()
         self.config = load_config()
         self.backend_path = backend or self.config.get("backend")
@@ -61,6 +62,9 @@ class Nexus(App):
         self.runner = Runner()
         self.local_model = LocalModel()
         self.cortex = None
+        self.connection = None
+        self.active_profile = None
+        self.start_connection = (connect or self.config.get("default_connection")) if autoconnect else None
         self.mcps = {}
         self.tail = None
         self.row = {}
@@ -112,6 +116,8 @@ class Nexus(App):
         self.set_interval(0.25, self.animate_stars)
         self.set_interval(0.3, self.poll_source)
         self.query_one(Input).focus()
+        if self.start_connection:
+            self.run_worker(self.execute("/connections use " + shlex.quote(self.start_connection)), exit_on_error=False)
 
     def say(self, source, message, color="#ba91ff"):
         if not len(self.query(RichLog)):
@@ -208,7 +214,8 @@ class Nexus(App):
         value = prompt.value
         choices = sorted({c[0] for c in COMMANDS} | {"/connect api", "/connect anthropic", "/connect local",
             "/devtest list", "/devtest all", "/mcp connect", "/mcp tools", "/mcp call", "/mcp close",
-            "/stars on", "/stars off"} | {"/devtest " + t["id"] for t in self.catalog})
+            "/stars on", "/stars off", "/connections list", "/connections save", "/connections use",
+            "/connections remove", "/connections default"} | {"/connections use " + n for n in self.config.get("connections", {})} | {"/devtest " + t["id"] for t in self.catalog})
         options = [c for c in choices if c.startswith(value)]
         if options:
             prompt.value = options[0] + " "
@@ -236,6 +243,7 @@ class Nexus(App):
     async def execute(self, line):
         command = line.split(" ", 1)[0] if line.startswith("/") else "chat"
         quick = command in ("/help", "/stop", "/tree", "/logs", "/agents", "/clear", "/stars", "/quit")
+        quick = quick or line.strip() in ("/connections", "/connections list")
         if self.active_task and not quick:
             self.say("ocupado", "Espera a la operación activa o usa /stop.")
             return
@@ -305,22 +313,51 @@ class Nexus(App):
                         self.say("suite", "Secuencia detenida; revisa la salida de la prueba.")
                         break
             elif command == "/connect":
-                mode = args[0]
-                if mode == "local":
-                    self.say("GGUF", "Cargando en localhost; /stop cancela. El log queda en /logs.")
-                    self.cortex = None
-                    self.cortex = await self.local_model.start(args[1])
-                elif mode in ("api", "anthropic"):
-                    value = Cortex(args[1], args[2], args[3] if len(args) > 3 else None,
-                                   "anthropic" if mode == "anthropic" else "openai")
-                    await self.local_model.close()
-                    self.cortex = value
+                await self.open_connection(parse(args))
+            elif command == "/connections":
+                operation = args[0] if args else "list"
+                saved = self.config.setdefault("connections", {})
+                if operation == "list":
+                    self.say("conexiones", "\n".join(
+                        f"{n}{' [activa]' if n == self.active_profile else ''}"
+                        f"{' [inicio]' if n == self.config.get('default_connection') else ''} · {describe(p)}"
+                        for n, p in saved.items()) or "Ninguna guardada. /connect … y /connections save NOMBRE")
+                elif operation == "save":
+                    n = connection_name(args[1])
+                    if not self.connection:
+                        raise ValueError("Conecta primero un modelo con /connect")
+                    saved[n] = profile(self.connection)
+                    self.active_profile = n
+                    save_config(self.config)
+                    self.say("conexiones", f"Guardada: {n}. Solo parámetros y referencias de credenciales.")
+                elif operation == "use":
+                    n = connection_name(args[1])
+                    await self.open_connection(saved[n], n)
+                elif operation == "remove":
+                    n = connection_name(args[1])
+                    del saved[n]
+                    if self.config.get("default_connection") == n:
+                        self.config.pop("default_connection")
+                    if self.active_profile == n:
+                        self.active_profile = None
+                    save_config(self.config)
+                    self.say("conexiones", f"Perfil eliminado: {n}. La conexión actual se conserva.")
+                elif operation == "default":
+                    n = args[1]
+                    if n == "off":
+                        self.config.pop("default_connection", None)
+                    else:
+                        connection_name(n)
+                        if n not in saved:
+                            raise ValueError("Ese perfil no existe")
+                        self.config["default_connection"] = n
+                    save_config(self.config)
+                    self.say("conexiones", f"Conexión al iniciar: {n}")
                 else:
-                    raise ValueError("/connect api|anthropic|local …")
-                self.say("neocórtex", f"Configurado: {self.cortex.model}. La conexión se comprueba al enviar texto.")
+                    raise ValueError("/connections list|save|use|remove|default [NOMBRE]")
             elif command == "/disconnect":
                 await self.local_model.close()
-                self.cortex = None
+                self.cortex = self.connection = self.active_profile = None
                 self.say("neocórtex", "Desconectado")
             elif command == "/agents":
                 self.say("detección", "\n".join(f"{d['name']}: {d['path'] or 'no instalado'} · {d['interface']}" for d in detect()))
@@ -353,7 +390,7 @@ class Nexus(App):
             elif command == "/tree":
                 self.action_tree()
             elif command == "/logs":
-                self.say("logs", f"Sesión: {self.session.path}\nInstalación: {state_dir() / 'install'}\n"
+                self.say("logs", f"Sesión: {self.session.path}\nGGUF: {getattr(self.local_model, 'log_path', 'sin arranque')}\nInstalación: {state_dir() / 'install'}\n"
                          "Los logs del arnés registran operaciones; los diarios del motor siguen siendo la fuente.")
             elif command == "/stop":
                 await self.action_cancel()
@@ -375,6 +412,21 @@ class Nexus(App):
             if self.active_task is task:
                 self.active_task = None
             self.update_status()
+
+    async def open_connection(self, value, name=None):
+        value = profile(value)
+        if value["mode"] == "local":
+            self.cortex = self.connection = self.active_profile = None
+            self.say("GGUF", "Cargando en CPU; /stop cancela. /logs muestra el registro de este intento.")
+            cortex = await self.local_model.start(value["path"], server=value.get("server"),
+                progress=lambda message: self.say("GGUF", message))
+        else:
+            cortex = Cortex(value["url"], value["model"], value.get("key_env"),
+                "anthropic" if value["mode"] == "anthropic" else "openai", key_file=value.get("key_file"))
+            await self.local_model.close()
+        self.cortex, self.connection, self.active_profile = cortex, value, name
+        self.say("neocórtex", f"{'Listo' if value['mode'] == 'local' else 'Configurado'}: {name or cortex.model}. "
+                 + ("Escribe tu mensaje." if value["mode"] == "local" else "La API se comprueba al enviar texto."))
 
     async def on_unmount(self):
         await self.runner.stop()

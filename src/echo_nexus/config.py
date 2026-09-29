@@ -38,9 +38,17 @@ def save_config(value: dict) -> None:
     temporary.replace(path)
 
 
+_secrets: set[str] = set()
+
+def register_secret(value: str) -> None:
+    if value:
+        _secrets.add(value)
+
 def redact(text: str) -> str:
     text = re.sub(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))", "", str(text))
     text = "".join(c for c in text if c in "\n\t" or ord(c) >= 32)
+    for value in _secrets:
+        text = text.replace(value, "[REDACTED]")
     for name, value in os.environ.items():
         if len(value) >= 8 and re.search(r"(?:KEY|TOKEN|SECRET|PASSWORD)", name, re.I):
             text = text.replace(value, "[REDACTED]")
