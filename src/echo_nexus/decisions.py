@@ -14,6 +14,7 @@ class DecisionView:
     def clear(self):
         self.rows = {}
         self.origin = "sin fuente"
+        self.wins = 0
 
     def consume(self, event, origin):
         kind = event.get("kind")
@@ -22,6 +23,8 @@ class DecisionView:
         self.origin = origin
         # Views retain only a bounded, latest record per type.
         self.rows[kind] = event
+        if kind == "result" and event.get("level_up") is True:
+            self.wins += 1
 
     def lines(self):
         if not self.rows:
@@ -31,11 +34,23 @@ class DecisionView:
         if observation:
             seen = observation.get("beliefs", observation.get("wsp", observation.get("state")))
             if isinstance(seen, dict) and "pos" in seen:
-                seen = ("posición estimada " + short(seen['pos']) + " · objetivo "
-                        + (short(seen['target']) if seen.get('target') is not None else 'sin identificar')
+                seen = ("posición estimada " + short(seen['pos']) + " · destino activo "
+                        + (short(seen['target']) if seen.get('target') is not None else 'ninguno')
                         + (" · reglas motoras " + str(len(seen['rule'])) if isinstance(seen.get('rule'), dict) else ''))
             if seen is not None:
                 lines.append("Observó: " + short(seen))
+            beliefs = observation.get("beliefs")
+            if isinstance(beliefs, dict):
+                for item in reversed(beliefs.get("recent_hypotheses", [])):
+                    if (isinstance(item, list) and len(item) == 3 and
+                            isinstance(item[1], list) and len(item[1]) == 2 and
+                            item[1][0] == "near" and isinstance(item[1][1], int) and
+                            item[2] in ("proposed", "confirmed")):
+                        lines.append("Hipótesis visual de meta: color " + str(item[1][1])
+                                     + " (" + ("confirmada" if item[2] == "confirmed" else "propuesta") + ")")
+                        break
+        if self.wins:
+            lines.append("Metas alcanzadas en esta sesión: " + str(self.wins))
         decision = self.rows.get("decision", self.rows.get("telemetry", {}))
         hypotheses = self.rows.get("hypothesis", {})
         if hypotheses:

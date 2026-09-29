@@ -298,7 +298,7 @@ class MCP:
             **({"start_new_session": True} if os.name == "posix" else {}))
         try:
             result = await self.request("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
-                "clientInfo": {"name": "echo-nexus", "version": "1.5.0"}})
+                "clientInfo": {"name": "echo-nexus", "version": "1.5.1"}})
             if result.get("protocolVersion") not in ("2025-06-18", "2025-03-26", "2024-11-05", "2025-11-25"):
                 raise ValueError("Versión MCP no compatible")
             self.send({"jsonrpc": "2.0", "method": "notifications/initialized"})

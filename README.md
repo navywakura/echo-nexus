@@ -1,6 +1,6 @@
 # echo-nexus
 
-**A beta development terminal for ECHO · version 1.5.0.** Dark purple, black and white.
+**A beta development terminal for ECHO · version 1.5.1.** Dark purple, black and white.
 Developer: **rxlabs** · © 2026 RxLabs · Harness source: **MIT**.
 
 [Website](https://www.rxlabs.org/echo-nexus) · [Guía en español](https://www.rxlabs.org/docs/echoai/echo-nexus)
@@ -221,7 +221,7 @@ server explicitly, then inspect and call its tools:
 MCP tools execute with the connected server's permissions; a tool can modify
 files. Only explicit `/mcp call` commands invoke tools. The neocortex cannot
 invoke them. Stdio protocol versions are negotiated. Streamable HTTP MCP is
-not included in 1.5.0. Current Codex installations may expose app-server
+not included in 1.5.1. Current Codex installations may expose app-server
 instead of the retired MCP server: detection does not claim these protocols
 are interchangeable. Supply a compatible MCP adapter if needed.
 

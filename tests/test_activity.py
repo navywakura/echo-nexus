@@ -77,6 +77,21 @@ class Activity(unittest.IsolatedAsyncioTestCase):
         view.clear()
         self.assertNotIn('left', view.explain())
 
+    def test_victory_hypothesis_is_distinct_from_active_destination(self):
+        view = DecisionView()
+        view.consume({'kind': 'observation', 'beliefs': {
+            'pos': [55, 47], 'target': None, 'rule': {'4': [8, 0]},
+            'recent_hypotheses': [[1, ['near', 3], 'proposed']]}}, 'actor')
+        view.consume({'kind': 'result', 'level_up': True, 'step': 56}, 'actor')
+        view.consume({'kind': 'result', 'level_up': False, 'step': 57}, 'actor')
+        report = view.explain()
+        self.assertIn('destino activo ninguno', report)
+        self.assertIn('Hipótesis visual de meta: color 3 (propuesta)', report)
+        self.assertIn('Metas alcanzadas en esta sesión: 1', report)
+        self.assertNotIn('objetivo sin identificar', report)
+        view.clear()
+        self.assertNotIn('Metas alcanzadas', view.explain())
+
     def test_coordinates_and_heading_do_not_modify_the_environment_grid(self):
         from echo_nexus.world import world_text
         grid = [[0, 1, 2], [3, 4, 5]]
