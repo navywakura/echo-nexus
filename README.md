@@ -1,9 +1,12 @@
 # echo-nexus
 
-**The official terminal harness for ECHO.** Dark purple, black and white.
+**A beta development terminal for ECHO · version 1.5.0.** Dark purple, black and white.
 Developer: **rxlabs** · © 2026 RxLabs · Harness source: **MIT**.
 
 [Website](https://www.rxlabs.org/echo-nexus) · [Guía en español](https://www.rxlabs.org/docs/echoai/echo-nexus)
+
+We welcome volunteer developers interested in the harness, development backends
+and reproducible ECHO training and evaluation. See [CONTRIBUTING](CONTRIBUTING.md).
 
 ```sh
 curl -fsSL https://rxlabs.org/echo-nexus.sh | bash
@@ -73,11 +76,16 @@ context in memory and writes redacted session logs with user-only permissions.
 Chat sends only the text you enter and recent conversation, not your local
 telemetry, files or images. Treat session logs as personal data.
 
+`/ask QUESTION` explicitly adds a summary of the latest recorded ECHO decisions
+to the adviser request. Viewer-only coordinates are excluded. `/echo` produces
+a deterministic report from those records without calling a model. The adviser
+response is not fed into the motor or its journal.
+
 The neocortex is a language interface. Its text is labeled as a **proposal**;
 it cannot operate motors, execute code, invoke tools or update ECHO facts.
 This does not enable the NEXUS-0 core's optional cortex.
 
-## Saved connections (0.1.1)
+## HTTPS OpenRouter and saved connections
 
 ```text
 /connect local /path/model.gguf
@@ -99,6 +107,47 @@ when making an API request. It is never executed. File secrets are redacted from
 session output. `/connections` lists profiles without opening their key files.
 [OpenRouter's free router](https://openrouter.ai/openrouter/free) picks an available
 free model; it does not promise a specific model or permanent availability.
+
+```text
+/models free
+/connect openrouter free @/path/.openrouterkey
+/connections save openrouter
+/connect openrouter liquid/lfm-2.5-2.6b:free
+```
+
+The short command reuses the credential reference from a profile named
+`openrouter`, if present. OpenRouter always uses HTTPS. Connecting checks the
+public model catalog without opening a key file; a retired ID is rejected with
+useful alternatives. HTTP errors retain the provider's redacted message.
+No paid model is substituted automatically. Free availability changes; consult
+`/models free` instead of relying on an old list.
+
+## Editor, copy and development worlds · 1.5
+
+```text
+/paste
+/copy last
+/copy why
+/copy session
+/world list
+/world start dev-world
+/echo
+/ask What observations support the next action?
+/world stop
+```
+
+Ctrl+V opens a multiline editor; F3 copies the latest message. Use the editor's
+Send button or Ctrl+Enter. Pasted text is a single chat message, never a sequence
+of slash commands. Clipboard integration uses an available native utility;
+copy falls back to the terminal's OSC52 support. `/paste` also allows manual
+editing when no clipboard utility is installed.
+
+An operator-owned backend can advertise `worlds`. A world runs alongside chat
+until `/world stop` or application exit, independent of `/devtest` timeouts.
+The backend decides whether to retain actor memory across episodes. The harness
+does not invent a world or guarantee persistence between application restarts.
+Changing the engine/backend or starting a separate test requires stopping the
+world first. `/stop` cancels an active chat first; `/world stop` stops the world.
 
 `/connections default NAME` reconnects that profile on launch. Use
 `echo-nexus --no-connect` to skip this, or `echo-nexus --connect NAME` to choose
@@ -172,7 +221,7 @@ server explicitly, then inspect and call its tools:
 MCP tools execute with the connected server's permissions; a tool can modify
 files. Only explicit `/mcp call` commands invoke tools. The neocortex cannot
 invoke them. Stdio protocol versions are negotiated. Streamable HTTP MCP is
-not included in 0.1.2. Current Codex installations may expose app-server
+not included in 1.5.0. Current Codex installations may expose app-server
 instead of the retired MCP server: detection does not claim these protocols
 are interchangeable. Supply a compatible MCP adapter if needed.
 

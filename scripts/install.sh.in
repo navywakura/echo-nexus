@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 umask 077
 
-NEXUS_VERSION='0.1.2'
+NEXUS_VERSION='1.5.0'
 NEXUS_SHA256='@WHEEL_SHA256@'
 NEXUS_RELEASE="https://www.rxlabs.org/releases/echo-nexus/$NEXUS_VERSION"
 NEXUS_WHEEL="echo_nexus-${NEXUS_VERSION}-py3-none-any.whl"

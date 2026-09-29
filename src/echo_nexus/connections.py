@@ -26,7 +26,14 @@ def profile(value):
 
 
 def parse(args):
-    if args[0] == "local" and len(args) in (2, 4):
+    if args[0] == "openrouter" and len(args) in (1, 2, 3):
+        model = args[1] if len(args) >= 2 else "openrouter/free"
+        if model == "free": model = "openrouter/free"
+        value = {"mode": "api", "url": "https://openrouter.ai/api/v1", "model": model}
+        if len(args) == 3:
+            ref = args[2]
+            value["key_file" if ref.startswith("@") else "key_env"] = ref[1:] if ref.startswith("@") else ref
+    elif args[0] == "local" and len(args) in (2, 4):
         value = {"mode": "local", "path": args[1]}
         if len(args) == 4:
             if args[2] != "--server":

@@ -1,3 +1,3 @@
 """RxLabs' open harness. No ECHO implementation is distributed here."""
 
-__version__ = "0.1.2"
+__version__ = "1.5.0"

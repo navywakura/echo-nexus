@@ -1,5 +1,13 @@
 """One source for command help, completion, and the documentation."""
 COMMANDS = [
+    ("/world", "[list|status|start ID|stop]", "Mundo continuo del backend; permite conversar mientras se ejecuta"),
+    ("/connect", "openrouter [free|MODELO] [KEY_ENV|@KEY_FILE]", "Conectar OpenRouter por HTTPS y comprobar su catálogo actual"),
+    ("/models", "[free]", "Consultar modelos gratuitos actuales sin leer claves"),
+    ("/paste", "", "Abrir editor multilínea; Ctrl+V pega, Ctrl+Enter envía"),
+    ("/copy", "[last|why|session]", "Copiar texto limpio; F3 copia el último mensaje"),
+    ("/chat", "MENSAJE", "Conversación con el asesor lingüístico"),
+    ("/ask", "PREGUNTA", "Consultar al asesor con los últimos registros observados de ECHO"),
+    ("/echo", "", "Informe determinista de ECHO sin consultar ningún LLM"),
     ("/devtest", "[list|all|ID]", "Ejecutar desarrollo; list muestra también informes sellados"),
     ("/agent", "[list|ID|reload]", "Elegir el perfil ECHO del backend; independiente del neocórtex"),
     ("/view", "coords on|off", "Coordenadas y brújula del visor humano"),

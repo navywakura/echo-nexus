@@ -90,3 +90,23 @@ A frame may include `observer` with `position: [x,y]`, `direction: [dx,dy]`,
 fields and must never be sent back to the agent. Direction should be measured
 facing or explicitly labeled movement; missing pose must remain unavailable.
 `/cell X Y` only changes the viewport. Coordinates are zero based.
+
+## Continuous session worlds · 1.5
+
+Root manifests and agent profiles may declare `worlds` alongside `tests`.
+Each entry uses the same development argv, cwd and validation rules as a test.
+Only `kind: development` can run. `/world start ID` starts one world process;
+`/world stop` and application exit terminate its process group. Chat remains
+available. Changing engine/backend or running a separate test requires stopping
+the world first. A running world owns the displayed decision source.
+
+World sessions have no harness wall timeout. The operator must define episode,
+memory and resource limits in their backend. Its canonical journal remains the
+decision source. Emit `progress` for steps and completed/solved episodes; the
+UI must not infer solved cases from process exits. Actor memory retention and
+persistence between restarts are backend responsibilities.
+
+`/ask QUESTION` sends the latest decision summary to the optional LLM adviser.
+It excludes the frame's viewer-only `observer` metadata. The adviser response
+is never sent back to the world process. `/echo` displays the same recorded
+summary deterministically without an API request.

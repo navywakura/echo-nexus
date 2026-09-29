@@ -15,7 +15,7 @@ from pathlib import Path
 
 import httpx
 
-from .config import state_dir, register_secret
+from .config import state_dir, register_secret, redact
 
 
 def endpoint(url: str) -> str:
@@ -24,7 +24,50 @@ def endpoint(url: str) -> str:
         raise ValueError("Usa una URL base sin credenciales, parámetros ni fragmento")
     if parts.scheme != "https" and not (parts.scheme == "http" and parts.hostname in ("127.0.0.1", "localhost", "::1")):
         raise ValueError("La API necesita HTTPS; HTTP solo se permite en localhost")
-    return url.rstrip("/")
+    base = url.rstrip("/")
+    if parts.hostname == "openrouter.ai":
+        if parts.scheme != "https":
+            raise ValueError("OpenRouter requiere HTTPS")
+        if parts.path.rstrip("/") in ("", "/api", "/api/v1", "/api/v1/chat/completions"):
+            return "https://openrouter.ai/api/v1"
+    return base
+
+
+async def model_catalog(url="https://openrouter.ai/api/v1", *, free_only=True):
+    """Public discovery. No credential is opened or sent to the model catalog."""
+    try:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=False, trust_env=False) as client:
+            response = await client.get(endpoint(url) + "/models")
+            response.raise_for_status()
+            if len(response.content) > 8_000_000:
+                raise ValueError("Catálogo demasiado grande")
+            rows = response.json().get("data", [])
+    except httpx.HTTPError:
+        raise RuntimeError("No se pudo consultar el catálogo HTTPS. Revisa la red y usa /models free para reintentar.") from None
+    def free(row):
+        try:
+            price = row["pricing"]
+            return float(price["prompt"]) == 0 and float(price["completion"]) == 0
+        except (KeyError, ValueError, TypeError):
+            return False
+    return [r for r in rows if isinstance(r, dict) and isinstance(r.get("id"), str)
+            and (not free_only or free(r))]
+
+
+def api_error(status, payload=None, retry_after=None):
+    """Provider metadata and raw bodies may contain prompts or credentials."""
+    error = payload.get("error", {}) if isinstance(payload, dict) else {}
+    message = error.get("message", "") if isinstance(error, dict) else ""
+    detail = redact(message)[:350] if isinstance(message, str) else ""
+    advice = {401: "Comprueba el archivo o variable de clave.",
+              402: "La cuenta o clave no tiene saldo para esta solicitud.",
+              403: "Revisa los permisos y filtros del proveedor.",
+              404: "Modelo o endpoint no disponible. /models free; /connect openrouter free.",
+              429: "Límite temporal del proveedor; espera antes de reintentar.",
+              503: "No hay proveedor disponible para esta petición."}.get(status, "Revisa URL y modelo.")
+    if retry_after and str(retry_after).isdigit():
+        advice += f" Reintento recomendado en {retry_after} s."
+    return f"API HTTP {status}" + (" · " + detail if detail else "") + "\n" + advice
 
 
 SYSTEM = ("Eres el neocórtex lingüístico opcional de echo-nexus. Tus respuestas son propuestas, "
@@ -90,7 +133,16 @@ class Cortex:
             async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=False, trust_env=False) as client:
                 async with client.stream("POST", self.url + route, json=body, headers=headers) as response:
                     if not 200 <= response.status_code < 300:
-                        raise RuntimeError(f"La API devolvió HTTP {response.status_code}; revisa URL, modelo y clave")
+                        data = bytearray()
+                        async for chunk in response.aiter_bytes():
+                            data.extend(chunk)
+                            if len(data) > 32768:
+                                break
+                        try:
+                            payload = json.loads(data) if len(data) <= 32768 else {}
+                        except ValueError:
+                            payload = {}
+                        raise RuntimeError(api_error(response.status_code, payload, response.headers.get("Retry-After")))
                     if "text/event-stream" in response.headers.get("content-type", ""):
                         text = await public_stream(response, self.protocol, on_delta, progress)
                     else:
@@ -100,6 +152,8 @@ class Cortex:
                             if len(raw) > 2_000_000:
                                 raise ValueError("Respuesta demasiado grande")
                         result = json.loads(raw)
+                        if result.get("error"):
+                            raise RuntimeError(api_error(response.status_code, result))
                         if self.protocol == "anthropic":
                             text = "\n".join(p.get("text", "") for p in result.get("content", []) if p.get("type") == "text")
                         else:
@@ -111,7 +165,9 @@ class Cortex:
         except httpx.HTTPError:
             raise RuntimeError("No se pudo conectar con la API; revisa red, URL y tiempo de espera") from None
         if not isinstance(text, str) or not text.strip():
-            raise ValueError("El proveedor no devolvió texto; este conector no ejecuta tool calls")
+            raise ValueError("El proveedor no devolvió texto público. Puede haber agotado el presupuesto de salida "
+                             "en razonamiento o solicitado herramientas. Prueba otro modelo con /models free; "
+                             "este conector no ejecuta tool calls.")
         self.history = (history + [{"role": "assistant", "content": text[:24000]}])[-12:]
         if progress:
             progress("Respuesta completada")
@@ -242,7 +298,7 @@ class MCP:
             **({"start_new_session": True} if os.name == "posix" else {}))
         try:
             result = await self.request("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
-                "clientInfo": {"name": "echo-nexus", "version": "0.1.2"}})
+                "clientInfo": {"name": "echo-nexus", "version": "1.5.0"}})
             if result.get("protocolVersion") not in ("2025-06-18", "2025-03-26", "2024-11-05", "2025-11-25"):
                 raise ValueError("Versión MCP no compatible")
             self.send({"jsonrpc": "2.0", "method": "notifications/initialized"})

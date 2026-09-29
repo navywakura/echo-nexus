@@ -21,6 +21,7 @@ def read_manifest(path):
     if not isinstance(manifest.get("tests", []), list):
         raise ValueError("tests debe ser una lista")
     validate_tests(manifest.get("tests", []))
+    validate_tests(manifest.get("worlds", []))
     agents = manifest.get("agents", [])
     if not isinstance(agents, list):
         raise ValueError("agents debe ser una lista")
@@ -30,6 +31,7 @@ def read_manifest(path):
             raise ValueError("Agentes sin identificador único")
         names.add(agent["id"])
         validate_tests(agent.get("tests", []))
+        validate_tests(agent.get("worlds", []))
     if manifest.get("default_agent") and manifest["default_agent"] not in names:
         raise ValueError("Agente predeterminado no anunciado")
     return manifest
@@ -62,7 +64,7 @@ class Runner:
         self.process = None
         self.cancelled = False
 
-    async def run(self, test, emit):
+    async def run(self, test, emit, *, continuous=False):
         if test.get("kind") != "development":
             raise ValueError("El arnés no ejecuta exámenes sellados ni informes archivados")
         if self.process is not None:
@@ -82,7 +84,7 @@ class Runner:
                 emit(obj if isinstance(obj, dict) else {"kind": "output", "text": value})
             return await self.process.wait()
         try:
-            code = await asyncio.wait_for(stream(), timeout=test.get("timeout", 120))
+            code = await stream() if continuous else await asyncio.wait_for(stream(), timeout=test.get("timeout", 120))
             if self.cancelled:
                 emit({"kind": "cancelled", "test": test["id"]})
                 return -1
