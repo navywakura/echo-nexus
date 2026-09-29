@@ -49,7 +49,7 @@ def image_text(path, width=40, height=15):
         return out
 
 
-def telemetry_tree(row=None, cortex=False):
+def telemetry_tree(row=None, cortex=False, decisions=None, activity=None):
     row = row or {}
     def value(*keys):
         for k in keys:
@@ -57,6 +57,15 @@ def telemetry_tree(row=None, cortex=False):
                 return str(row[k])[:78]
         return "sin muestra"
     root = Tree(Text("ECHO / telemetría", style="bold #ba91ff"), guide_style="#574071")
+    if decisions is not None:
+        observed = root.add(Text("Últimas decisiones · fuente externa", style="#cfb1ff"))
+        for line in decisions.lines():
+            observed.add(Text(line[:180]))
+    if activity:
+        process = root.add(Text(activity["kind"] + " / actividad", style="#ffffff"))
+        process.add(Text(activity["stage"]))
+        if activity["kind"] == "NEOCÓRTEX":
+            process.add(Text("Estado de la petición · sin monólogo interno", style="#82758e"))
     core = root.add(Text("Control observado", style="#ffffff"))
     core.add(Text("WSP   " + value("wsp", "frame")))
     memory = core.add(Text("CAM / memoria   " + value("cam_used", "beliefs")))

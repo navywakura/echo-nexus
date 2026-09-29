@@ -47,7 +47,9 @@ class Cortex:
         self.model, self.key_env, self.protocol = model, key_env, protocol
         self.history = []
 
-    async def ask(self, prompt):
+    async def ask(self, prompt, *, progress=None, on_delta=None):
+        if progress:
+            progress("Preparando solicitud")
         headers = {"Content-Type": "application/json"}
         key = os.getenv(self.key_env, "") if self.key_env else ""
         if self.key_env and not key:
@@ -74,35 +76,85 @@ class Cortex:
             if key:
                 headers["x-api-key"] = key
             headers["anthropic-version"] = "2023-06-01"
-            body = {"model": self.model, "system": SYSTEM, "messages": history, "max_tokens": self.max_tokens}
+            body = {"model": self.model, "system": SYSTEM, "messages": history, "max_tokens": self.max_tokens, "stream": bool(on_delta)}
             route = "/messages"
         else:
             if key:
                 headers["Authorization"] = "Bearer " + key
             body = {"model": self.model, "messages": [{"role": "system", "content": SYSTEM}] + history,
-                    "stream": False, "max_tokens": self.max_tokens}
+                    "stream": bool(on_delta), "max_tokens": self.max_tokens}
             route = "/chat/completions"
+        if progress:
+            progress("Solicitud enviada · esperando al modelo")
         try:
             async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=False, trust_env=False) as client:
                 async with client.stream("POST", self.url + route, json=body, headers=headers) as response:
                     if not 200 <= response.status_code < 300:
                         raise RuntimeError(f"La API devolvió HTTP {response.status_code}; revisa URL, modelo y clave")
-                    raw = bytearray()
-                    async for chunk in response.aiter_bytes():
-                        raw.extend(chunk)
-                        if len(raw) > 2_000_000:
-                            raise ValueError("Respuesta demasiado grande")
-                    result = json.loads(raw)
+                    if "text/event-stream" in response.headers.get("content-type", ""):
+                        text = await public_stream(response, self.protocol, on_delta, progress)
+                    else:
+                        raw = bytearray()
+                        async for chunk in response.aiter_bytes():
+                            raw.extend(chunk)
+                            if len(raw) > 2_000_000:
+                                raise ValueError("Respuesta demasiado grande")
+                        result = json.loads(raw)
+                        if self.protocol == "anthropic":
+                            text = "\n".join(p.get("text", "") for p in result.get("content", []) if p.get("type") == "text")
+                        else:
+                            text = result["choices"][0]["message"].get("content")
+                        if on_delta and isinstance(text, str):
+                            if progress:
+                                progress("Respuesta recibida")
+                            on_delta(text)
         except httpx.HTTPError:
             raise RuntimeError("No se pudo conectar con la API; revisa red, URL y tiempo de espera") from None
-        if self.protocol == "anthropic":
-            text = "\n".join(p.get("text", "") for p in result.get("content", []) if p.get("type") == "text")
-        else:
-            text = result["choices"][0]["message"].get("content")
         if not isinstance(text, str) or not text.strip():
             raise ValueError("El proveedor no devolvió texto; este conector no ejecuta tool calls")
         self.history = (history + [{"role": "assistant", "content": text[:24000]}])[-12:]
+        if progress:
+            progress("Respuesta completada")
         return text
+
+
+async def public_stream(response, protocol, on_delta, progress):
+    """Render only public answer deltas; ignore provider reasoning and tool events."""
+    fragments, data = [], []
+    size, done = 0, False
+    async for line in response.aiter_lines():
+        size += len(line.encode("utf-8"))
+        if size > 2_000_000:
+            raise ValueError("Respuesta demasiado grande")
+        if line.startswith("data:"):
+            data.append(line[5:].lstrip())
+        elif not line and data:
+            payload = "\n".join(data)
+            data = []
+            if payload == "[DONE]":
+                done = True
+                break
+            event = json.loads(payload)
+            if event.get("error") or event.get("type") == "error":
+                raise RuntimeError("El proveedor interrumpió la generación; consulta su estado")
+            if protocol == "anthropic":
+                if event.get("type") == "message_stop":
+                    done = True
+                    break
+                delta = event.get("delta", {})
+                chunk = delta.get("text", "") if delta.get("type") == "text_delta" else ""
+            else:
+                choices = event.get("choices", [])
+                chunk = choices[0].get("delta", {}).get("content", "") if choices else ""
+            if isinstance(chunk, str) and chunk:
+                if not fragments and progress:
+                    progress("Generando respuesta · texto recibido")
+                fragments.append(chunk)
+                if on_delta:
+                    on_delta(chunk)
+    if not done:
+        raise RuntimeError("La respuesta se interrumpió antes de completarse; vuelve a intentarlo")
+    return "".join(fragments)
 
 class LocalModel:
     def __init__(self):
@@ -190,7 +242,7 @@ class MCP:
             **({"start_new_session": True} if os.name == "posix" else {}))
         try:
             result = await self.request("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
-                "clientInfo": {"name": "echo-nexus", "version": "0.1.1"}})
+                "clientInfo": {"name": "echo-nexus", "version": "0.1.2"}})
             if result.get("protocolVersion") not in ("2025-06-18", "2025-03-26", "2024-11-05", "2025-11-25"):
                 raise ValueError("Versión MCP no compatible")
             self.send({"jsonrpc": "2.0", "method": "notifications/initialized"})

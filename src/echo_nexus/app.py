@@ -5,6 +5,7 @@ import asyncio
 import json
 import shlex
 import shutil
+import time
 from pathlib import Path
 
 from rich.text import Text
@@ -17,6 +18,8 @@ from textual.widgets import Footer, Input, RichLog, Static
 from . import __version__
 from .backend import Runner, Tail, demo_test, read_manifest
 from .commands import COMMANDS, matches
+from .decisions import DecisionView
+from .world import world_text
 from .connections import parse, profile, describe, name as connection_name
 from .config import SessionLog, detect, load_config, redact, save_config, state_dir
 from .transport import Cortex, LocalModel, MCP
@@ -34,11 +37,15 @@ class Nexus(App):
     #stars { height: 1; color: #8965b4; background: #09060f; }
     #banner { height: 4; color: #cfb1ff; padding: 0 2; }
     #status { height: 2; padding: 0 2; color: #a98bc8; border-bottom: solid #372244; }
+    #activity { height: 2; padding: 0 2; color: #cfb1ff; }
+    #chatcol { width: 2fr; min-width: 30; }
+    #stream { display: none; height: auto; max-height: 12; padding: 1; overflow-y: auto; border: round #8965b4; }
     #body { height: 1fr; padding: 0 1; }
-    #conversation { width: 2fr; min-width: 30; border: round #50366a; padding: 0 1; }
+    #conversation { height: 1fr; border: round #50366a; padding: 0 1; }
     #side { width: 1fr; min-width: 32; margin-left: 1; }
-    #telemetry { height: 1fr; min-height: 8; border: round #50366a; padding: 0 1; overflow-y: auto; }
-    #world { height: 1fr; min-height: 8; border: round #50366a; padding: 0 1; content-align: center middle; }
+    #counters { height: auto; min-height: 4; padding: 0 1; color: #cfb1ff; border: round #50366a; }
+    #telemetry { height: 1fr; min-height: 5; border: round #50366a; padding: 0 1; overflow-y: auto; }
+    #world { height: 2fr; min-height: 10; border: round #50366a; padding: 0 1; overflow-y: auto; content-align: center middle; }
     #origin { height: 2; color: #ba91ff; padding: 0 1; }
     #hints { height: 3; color: #b3a1c7; padding: 0 2; overflow: hidden; }
     #prompt { margin: 0 1; border: tall #674387; background: #171023; }
@@ -47,7 +54,7 @@ class Nexus(App):
     Footer > .footer--key { background: #39224e; color: #ffffff; }
     .narrow #side { display: none; }
     .expanded #side { display: block; width: 1fr; }
-    .expanded #conversation { display: none; }
+    .expanded #chatcol { display: none; }
     """
     BINDINGS = [Binding("ctrl+c", "cancel", "Detener", priority=True),
                 Binding("ctrl+q", "quit", "Salir", priority=True),
@@ -59,6 +66,13 @@ class Nexus(App):
         self.config = load_config()
         self.backend_path = backend or self.config.get("backend")
         self.catalog = []
+        self.agent_profiles = []
+        self.selected_agent = self.config.get("agent")
+        self.counts = {"completed": 0, "total": 0, "errors": 0, "cancelled": 0}
+        self.metrics = {}
+        self.observer = {}
+        self.coordinates = True
+        self.focus_cell = None
         self.runner = Runner()
         self.local_model = LocalModel()
         self.cortex = None
@@ -67,6 +81,9 @@ class Nexus(App):
         self.start_connection = (connect or self.config.get("default_connection")) if autoconnect else None
         self.mcps = {}
         self.tail = None
+        self.decisions = DecisionView()
+        self.activity = None
+        self.stream_text = ""
         self.row = {}
         self.grid = None
         self.image_path = None
@@ -80,9 +97,13 @@ class Nexus(App):
         yield Static("", id="stars")
         yield Static(Text(BANNER), id="banner")
         yield Static("", id="status")
+        yield Static("Escribe un mensaje para conversar · /why muestra decisiones de ECHO", id="activity")
         with Horizontal(id="body"):
-            yield RichLog(id="conversation", highlight=False, markup=False, wrap=True, max_lines=1500)
+            with Vertical(id="chatcol"):
+                yield RichLog(id="conversation", highlight=False, markup=False, wrap=True, min_width=1, max_lines=1500)
+                yield Static("", id="stream")
             with Vertical(id="side"):
+                yield Static("Procesos 0/0 · errores 0\nCasos resueltos: sin resultado", id="counters")
                 yield Static(telemetry_tree(), id="telemetry")
                 yield Static("Sin imagen\n/devtest · /watch · /image", id="world")
                 yield Static("SIN TELEMETRÍA · esperando una fuente", id="origin")
@@ -94,6 +115,7 @@ class Nexus(App):
     def on_mount(self):
         self.query_one("#conversation").border_title = "01 / SESIÓN"
         self.query_one("#telemetry").border_title = "02 / ÁRBOL OBSERVABLE"
+        self.query_one("#stream").border_title = "RESPUESTA EN CURSO · PROPUESTA"
         self.query_one("#world").border_title = "03 / MUNDO · IMAGEN"
         self.say("echo-nexus", f"v{__version__} · developer: rxlabs · © 2026 RxLabs\n"
                  "Una ventana al trabajo de ECHO. Pruebas, observaciones y conexiones en un lugar.\n"
@@ -131,16 +153,17 @@ class Nexus(App):
     def update_status(self):
         if not len(self.query("#status")):
             return
-        cortex = self.cortex.model if self.cortex else "OFF"
+        cortex = (self.active_profile or self.cortex.model) if self.cortex else "OFF"
         active = "PRUEBA / SOLICITUD ACTIVA" if self.active_task else "LISTO"
         self.query_one("#status", Static).update(Text(f"Rx / {active}     MOTOR {'CONECTADO' if self.catalog else '—'}"
             f"     NEOCÓRTEX {cortex}     MCP {len(self.mcps)}"))
-        self.query_one("#telemetry", Static).update(telemetry_tree(self.row, bool(self.cortex)))
+        self.query_one("#telemetry", Static).update(telemetry_tree(self.row, bool(self.cortex), self.decisions, self.activity))
 
     def animate_stars(self):
         if not len(self.query("#stars")):
             return
         self.star_tick += 1
+        self.render_activity()
         width = max(1, self.size.width - 2)
         if not self.stars_enabled:
             self.query_one("#stars", Static).update("")
@@ -163,21 +186,33 @@ class Nexus(App):
             if self.image_path:
                 world.update(image_text(self.image_path, width, height))
             elif self.grid is not None:
-                world.update(grid_text(self.grid, width, height))
+                world.update(world_text(self.grid, width, height, self.observer, self.coordinates, self.focus_cell))
         except (OSError, ValueError) as e:
             world.update(Text(str(e)))
 
     def consume(self, event, source="LIVE / desarrollo"):
         kind = event.get("kind", "decision")
+        if kind == "progress":
+            self.metrics.update(event)
+        if kind == "telemetry":
+            self.metrics.update({k: event[k] for k in ("turn", "deaths", "generation") if k in event})
+        if "observer" in event:
+            self.observer = event["observer"]
+        self.render_counts()
         origin = str(event.get("origin", source))
-        self.query_one("#origin", Static).update(Text(origin))
+        if "origin" in event or "grid" in event:
+            self.query_one("#origin", Static).update(Text(origin))
         if "grid" in event:
             self.grid, self.image_path = event["grid"], None
             self.refresh_world()
+        self.decisions.consume(event, origin)
+        if self.activity and self.activity["kind"] == "ECHO" and kind != "frame":
+            self.activity["stage"] = {"observation": "Observación recibida", "decision": "Decisión registrada", "result": "Resultado recibido"}.get(kind, "Ejecutando desarrollo")
         if any(k in event for k in ("wsp", "q", "q_row", "action", "lif_a", "beliefs")):
             self.row.update(event)
-            self.query_one("#telemetry", Static).update(telemetry_tree(self.row, bool(self.cortex)))
-        if kind == "frame":
+            self.query_one("#telemetry", Static).update(telemetry_tree(self.row, bool(self.cortex), self.decisions, self.activity))
+        self.query_one("#telemetry", Static).update(telemetry_tree(self.row, bool(self.cortex), self.decisions, self.activity))
+        if kind in ("frame", "progress"):
             return
         if kind == "process_end":
             self.say("proceso", f"{event['test']} · exit {event['exit_code']}. "
@@ -185,6 +220,8 @@ class Nexus(App):
         elif kind == "telemetry":
             self.say("observación", f"Turno {event.get('turn')} · acción {event.get('action_name')} · "
                      f"recompensa {event.get('reward')} · gate {event.get('gate')}")
+        elif kind in ("observation", "decision", "hypothesis", "result"):
+            self.say(kind, "\n".join(self.decisions.lines()))
         else:
             self.say(kind, event.get("text", json.dumps(event, ensure_ascii=False)[:2500]))
 
@@ -199,9 +236,15 @@ class Nexus(App):
 
     def load_backend(self, path):
         manifest = read_manifest(path)
-        self.catalog = manifest.get("tests", [])
+        self.agent_profiles = manifest.get("agents", [])
+        ids = {a["id"] for a in self.agent_profiles}
+        if self.selected_agent not in ids:
+            self.selected_agent = manifest.get("default_agent")
+        chosen = next((a for a in self.agent_profiles if a["id"] == self.selected_agent), None)
+        overrides = chosen.get("tests", []) if chosen else []
+        self.catalog = [t for t in manifest.get("tests", []) if t["id"] not in {v["id"] for v in overrides}] + overrides
         self.backend_path = str(Path(path).expanduser().resolve())
-        self.say("backend", f"{manifest.get('name', 'ECHO')} · {len(self.catalog)} entradas disponibles")
+        self.say("backend", f"{manifest.get('name', 'ECHO')} · {len(self.catalog)} entradas disponibles · {self.selected_agent or 'sin perfiles'}")
 
     def on_input_changed(self, event: Input.Changed):
         options = matches(event.value) if event.value.startswith("/") else []
@@ -215,7 +258,7 @@ class Nexus(App):
         choices = sorted({c[0] for c in COMMANDS} | {"/connect api", "/connect anthropic", "/connect local",
             "/devtest list", "/devtest all", "/mcp connect", "/mcp tools", "/mcp call", "/mcp close",
             "/stars on", "/stars off", "/connections list", "/connections save", "/connections use",
-            "/connections remove", "/connections default"} | {"/connections use " + n for n in self.config.get("connections", {})} | {"/devtest " + t["id"] for t in self.catalog})
+            "/connections remove", "/connections default", "/view coords on", "/view coords off"} | {"/agent " + a["id"] for a in self.agent_profiles} | {"/connections use " + n for n in self.config.get("connections", {})} | {"/devtest " + t["id"] for t in self.catalog})
         options = [c for c in choices if c.startswith(value)]
         if options:
             prompt.value = options[0] + " "
@@ -242,7 +285,7 @@ class Nexus(App):
 
     async def execute(self, line):
         command = line.split(" ", 1)[0] if line.startswith("/") else "chat"
-        quick = command in ("/help", "/stop", "/tree", "/logs", "/agents", "/clear", "/stars", "/quit")
+        quick = command in ("/help", "/stop", "/tree", "/logs", "/agents", "/clear", "/stars", "/quit", "/why", "/cell", "/view")
         quick = quick or line.strip() in ("/connections", "/connections list")
         if self.active_task and not quick:
             self.say("ocupado", "Espera a la operación activa o usa /stop.")
@@ -251,13 +294,17 @@ class Nexus(App):
         if not quick:
             self.active_task = task
         self.update_status()
+        outcome = "Completado"
         try:
             if command == "chat":
                 self.say("tú", line)
                 if not self.cortex:
                     self.say("neocórtex", "Conecta un modelo con /connect api o /connect local.")
                 else:
-                    self.say("neocórtex · propuesta", await self.cortex.ask(line))
+                    self.begin_activity("NEOCÓRTEX", "Preparando solicitud")
+                    self.stream_text = ""
+                    answer = await self.cortex.ask(line, progress=self.set_phase, on_delta=self.receive_text)
+                    self.say("neocórtex · propuesta", answer)
                 return
             if command == "/mcp" and line.startswith("/mcp call "):
                 parts = line.split(None, 4)
@@ -271,14 +318,32 @@ class Nexus(App):
                 return
             parts = shlex.split(line)
             args = parts[1:]
-            if command == "/help":
+            if command == "/why":
+                self.say("decisiones de ECHO", self.decisions.explain())
+            elif command == "/help":
                 selected = COMMANDS if not args else [c for c in COMMANDS if c[0] == "/" + args[0].lstrip("/")]
                 self.say("comandos", "\n".join(f"{n} {s}\n  {d}" for n, s, d in selected))
             elif command == "/backend":
+                self.selected_agent = None
                 self.load_backend(args[0])
                 self.config["backend"] = self.backend_path
                 save_config(self.config)
+            elif command == "/agent":
+                if not args or args[0] == "list":
+                    self.say("agentes", "\n".join(
+                        f"{a['id']}{' [activo]' if a['id'] == self.selected_agent else ''} · {a.get('description', '')}"
+                        for a in self.agent_profiles) or "El backend no anuncia perfiles de agente.")
+                else:
+                    if args[0] != "reload":
+                        if args[0] not in {a["id"] for a in self.agent_profiles}:
+                            raise ValueError("Agente no anunciado; /agent muestra los disponibles")
+                        self.selected_agent = args[0]
+                    self.load_backend(self.backend_path)
+                    self.config["agent"] = self.selected_agent
+                    save_config(self.config)
             elif command in ("/devtest", "/demo"):
+                if self.backend_path and command == "/devtest":
+                    self.load_backend(self.backend_path)
                 selection = "demo" if command == "/demo" else args[0] if args else "default"
                 if selection == "list":
                     self.say("catálogo", "\n".join(f"{t['id']} [{t['kind']}] — {t['title']}" for t in self.catalog)
@@ -293,6 +358,8 @@ class Nexus(App):
                     tests = [t for t in self.catalog if t["id"] == selection]
                 if not tests:
                     raise ValueError("No hay pruebas para esa selección. /devtest list · /backend MANIFEST.json")
+                self.counts = {"completed": 0, "total": sum(t["kind"] == "development" for t in tests), "errors": 0, "cancelled": 0}
+                self.render_counts()
                 for test in tests:
                     if test["kind"] != "development":
                         path = test.get("report")
@@ -305,11 +372,19 @@ class Nexus(App):
                             self.say("sellado", test.get("note", "Examen no ejecutable desde el arnés"))
                         continue
                     self.say("desarrollo", test["title"])
+                    self.decisions.clear()
+                    self.metrics, self.observer, self.focus_cell = {}, {}, None
+                    self.render_counts()
+                    self.begin_activity("ECHO", "Ejecutando " + test["id"])
                     self.row, self.grid, self.image_path = {}, None, None
                     self.query_one("#world", Static).update("Esperando un frame de esta prueba")
                     self.update_status()
                     code = await self.runner.run(test, self.consume)
+                    self.counts["completed"] += 1
+                    self.counts["errors"] += int(code != 0)
+                    self.render_counts()
                     if code:
+                        outcome = "Falló el proceso"
                         self.say("suite", "Secuencia detenida; revisa la salida de la prueba.")
                         break
             elif command == "/connect":
@@ -379,8 +454,23 @@ class Nexus(App):
                 else:
                     raise ValueError("Operación MCP desconocida; /help mcp")
             elif command == "/watch":
+                self.decisions.clear()
+                self.row = {}
                 self.tail = None if args[0] == "off" else Tail(args[0])
                 self.say("registro", "Seguimiento desactivado" if self.tail is None else "Solo lectura: " + str(self.tail.path))
+            elif command == "/view":
+                if args not in (["coords", "on"], ["coords", "off"]):
+                    raise ValueError("/view coords on|off")
+                self.coordinates = args[1] == "on"
+                self.refresh_world()
+            elif command == "/cell":
+                x, y = map(int, args)
+                if self.grid is None or not (0 <= y < len(self.grid) and 0 <= x < len(self.grid[0])):
+                    raise ValueError("Celda fuera de la rejilla visible")
+                self.focus_cell = [x, y]
+                xyz = self.observer.get("cell_world", {}).get(f"{x},{y}")
+                self.say("visor humano", f"Celda ({x}, {y}) · color {self.grid[y][x]}" + (f" · mundo XYZ {xyz}" if xyz else ""))
+                self.refresh_world()
             elif command == "/image":
                 path = Path(args[0]).expanduser()
                 image_text(path)
@@ -405,18 +495,77 @@ class Nexus(App):
             else:
                 raise ValueError("Comando desconocido. /help")
         except asyncio.CancelledError:
+            if command in ("/devtest", "/demo"):
+                self.counts["cancelled"] += 1
+                self.render_counts()
+            outcome = "Cancelado"
             self.say("operación", "Cancelada")
         except (OSError, ValueError, RuntimeError, IndexError, KeyError, TypeError, asyncio.TimeoutError) as e:
+            outcome = "Error"
             self.say("error", str(e) or type(e).__name__, "#f0b783")
         finally:
             if self.active_task is task:
+                if self.activity:
+                    if self.activity["kind"] == "ECHO" and outcome == "Completado" and self.metrics.get("stop_reason"):
+                        outcome += " · " + str(self.metrics["stop_reason"])
+                    self.activity.update(stage=outcome, ended=time.monotonic())
+                self.query_one("#stream", Static).display = False
                 self.active_task = None
+                self.render_activity()
             self.update_status()
+
+    def render_counts(self):
+        if not self.is_mounted:
+            return
+        c, m = self.counts, self.metrics
+        lines = [f"Procesos {c['completed']}/{c['total']} · errores {c['errors']}" + (f" · cancelados {c['cancelled']}" if c['cancelled'] else "")]
+        if "cases_done" in m:
+            lines.append(f"Casos {m['cases_done']}/{m.get('cases_total', '?')} · resueltos {m.get('solved', '?')}")
+        if "levels" in m:
+            lines.append(f"Niveles {m['levels']}/{m.get('levels_total', '?')} · reinicios {m.get('resets', 0)}")
+        if "step" in m:
+            lines.append(f"Pasos {m['step']}/{m.get('budget', '?')}")
+        if "deaths" in m:
+            lines.append(f"Muertes {m['deaths']} · generación {m.get('generation', '?')} · turno {m.get('turn', '?')}")
+        self.query_one("#counters", Static).update(Text("\n".join(lines)))
+        self.call_after_refresh(self.refresh_world)
+
+    def begin_activity(self, kind, stage):
+        self.activity = {"kind": kind, "stage": stage, "started": time.monotonic(), "chars": 0}
+        self.render_activity()
+
+    def set_phase(self, stage):
+        if self.activity:
+            self.activity["stage"] = stage
+            self.render_activity()
+
+    def receive_text(self, chunk):
+        self.stream_text += chunk
+        if self.activity:
+            self.activity["chars"] = len(self.stream_text)
+        panel = self.query_one("#stream", Static)
+        panel.display = True
+        panel.update(Text(redact(self.stream_text)[-2200:]))
+        panel.scroll_end(animate=False)
+
+    def render_activity(self):
+        if not self.activity or not self.is_mounted:
+            return
+        a = self.activity
+        elapsed = a.get("ended", time.monotonic()) - a["started"]
+        glyph = "✓" if a.get("ended") and a["stage"].startswith("Completado") else "·"
+        if not a.get("ended") and self.stars_enabled:
+            glyph = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[self.star_tick % 10]
+        count = f" · {a['chars']} caracteres recibidos" if a.get("chars") else ""
+        self.query_one("#activity", Static).update(Text(
+            f"{glyph} {a['kind']} · {a['stage']} · {elapsed:.1f} s{count}"))
+        self.query_one("#telemetry", Static).update(telemetry_tree(self.row, bool(self.cortex), self.decisions, a))
 
     async def open_connection(self, value, name=None):
         value = profile(value)
         if value["mode"] == "local":
             self.cortex = self.connection = self.active_profile = None
+            self.begin_activity("GGUF", "Cargando modelo en CPU")
             self.say("GGUF", "Cargando en CPU; /stop cancela. /logs muestra el registro de este intento.")
             cortex = await self.local_model.start(value["path"], server=value.get("server"),
                 progress=lambda message: self.say("GGUF", message))

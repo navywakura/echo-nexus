@@ -113,6 +113,48 @@ Choose a binary with `/connect local PATH --server /path/llama-server` or
 `ECHO_NEXUS_LLAMA_SERVER`. That binary must support `--device none` and
 `--no-op-offload`. Updating the harness requires restarting its running session.
 
+## Visible activity (0.1.2)
+
+Type ordinary text and press Enter to chat with the connected model. For example:
+"Help me break a problem into testable steps; summarize evidence and limitations."
+The animated status shows observed request phases, elapsed time and the number
+of public answer characters received. Text streams as the provider sends it.
+`/stars off` stops animation while retaining status. `/stop` cancels the wait.
+
+`/why` summarizes ECHO observations, recorded branch criteria, actions and results
+from `/devtest` or `/watch`. Missing reasons remain explicitly unavailable. The
+panel is the source's last received evidence, not the LLM's private reasoning or
+new observations from a chat request. Chat never automatically receives journals;
+paste specific observations to discuss them. Provider reasoning/tool-call fields
+are not displayed, executed or retained in conversation history. An interrupted
+stream is reported as incomplete and never saved as a complete answer.
+
+## Agents, counters and the developer world
+
+```text
+/agent
+/agent echo-4.0-cognitive-agentic
+/agent echo-4.5-adaptative-agentic
+/devtest dev-world
+/devtest arc-gym
+/devtest arc1-train
+/devtest arc2-train
+/devtest arc1-replay
+/devtest arc2-replay
+/devtest arc3-replay
+/view coords on
+/cell 3 2
+/why
+```
+
+`/agent` selects a backend engine profile; `/connections` selects the language adviser. The private lab adapter maps 4.0 to ARC v2 and the initial grid library, and 4.5 to ARC v5.7 and current grid refinement. These are explicit component adapters, not an integration of every research module. Shared core tests are common to both profiles. Each new process reloads local code and records its hash; `/agent reload` refreshes the manifest. Unintegrated S6/EGO results are not activated automatically.
+
+Counters distinguish completed processes from solved cases and show steps, limits, levels, resets, and deaths/generations where reported. ARC3-GYM now uses three development seeds and 600 steps each, with an explicit stop reason. The private editable world uses `lab/echo-nexus/dev-world.json`; runner settings are in `lab/echo-nexus/live-agent.json`. Edit and rerun `dev-world`. The checked 4.5 run reached the goal in 56 steps without resets; this is one synthetic puzzle.
+
+Coordinates, compass and arrows are human-only overlays. `/cell X Y` inspects and centers a cell; F2 expands the panel, and `/view coords off` restores the whole image. Screen coordinates use +X east and +Y south. Body3D includes actual XYZ and facing; ARC3-GYM shows last observed movement, not an assumed facing direction. Recordings without pose data leave it unavailable. Overlays never enter agent observations.
+
+`arc1-train`/`arc2-train` solve small public training samples. `*-replay` displays archived examinations: ARC-1/2 input, prediction and published answer, or ARC-3 actions with per-frame hash checks. These are visualizations, not new scores or reopened exams. The public harness ships neither ECHO code nor the private adapter.
+
 ## MCP and installed agents
 
 `/agents` and installation detection only find executable paths. They never
@@ -130,7 +172,7 @@ server explicitly, then inspect and call its tools:
 MCP tools execute with the connected server's permissions; a tool can modify
 files. Only explicit `/mcp call` commands invoke tools. The neocortex cannot
 invoke them. Stdio protocol versions are negotiated. Streamable HTTP MCP is
-not included in 0.1.1. Current Codex installations may expose app-server
+not included in 0.1.2. Current Codex installations may expose app-server
 instead of the retired MCP server: detection does not claim these protocols
 are interchangeable. Supply a compatible MCP adapter if needed.
 

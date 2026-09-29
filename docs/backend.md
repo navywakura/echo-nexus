@@ -71,3 +71,22 @@ Delete the `echo-nexus` launcher in your chosen bin directory and the matching
 `echo-nexus` directory under `~/.local/share`. Configuration lives under
 `~/.config/echo-nexus`; logs under `~/.local/state/echo-nexus`. Retain logs if
 needed. These locations honor XDG overrides and installer environment options.
+
+
+## Optional agent profiles and viewer progress (0.1.2)
+
+The manifest may declare `agents: [{id, description, tests: [...]}]` and
+`default_agent`. Agent tests override root tests by ID; common root tests remain.
+All argv lists undergo the same validation. `/agent ID` persists selection, and
+each `/devtest` reloads the manifest. The harness does not bundle any engine.
+
+Emit `kind: progress` with `cases_done`, `cases_total`, `solved`, `step`, `budget`,
+`levels`, `levels_total`, `resets`, and `stop_reason` as applicable. A zero process
+exit is not counted as a solved case. Counters describe the current run.
+
+A frame may include `observer` with `position: [x,y]`, `direction: [dx,dy]`,
+`direction_kind`, `label`, optional `world_position`, `world_direction`, and
+`cell_world: {"x,y": [world_x,world_y,world_z]}`. These are output-only viewer
+fields and must never be sent back to the agent. Direction should be measured
+facing or explicitly labeled movement; missing pose must remain unavailable.
+`/cell X Y` only changes the viewport. Coordinates are zero based.

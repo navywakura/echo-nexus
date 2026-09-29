@@ -3,8 +3,8 @@
 set -Eeuo pipefail
 umask 077
 
-NEXUS_VERSION='0.1.1'
-NEXUS_SHA256='b2b188e908540aafe64d1f43a18bebb4d70f9f8010c17a0621ceff135a714e6e'
+NEXUS_VERSION='0.1.2'
+NEXUS_SHA256='bf39681e21eef8a9fd18830757eb46ccbef4f8792e76939805b9dc6c691d4dc4'
 NEXUS_RELEASE="https://www.rxlabs.org/releases/echo-nexus/$NEXUS_VERSION"
 NEXUS_WHEEL="echo_nexus-${NEXUS_VERSION}-py3-none-any.whl"
 NEXUS_DATA="${ECHO_NEXUS_INSTALL_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/echo-nexus}"

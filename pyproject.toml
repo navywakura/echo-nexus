@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "echo-nexus"
-version = "0.1.1"
+version = "0.1.2"
 description = "The open terminal harness for ECHO. Developer: RxLabs."
 readme = "README.md"
 requires-python = ">=3.10"

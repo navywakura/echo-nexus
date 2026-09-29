@@ -20,8 +20,26 @@ def read_manifest(path):
         raise ValueError("Se esperaba schema echo-nexus-backend-v1")
     if not isinstance(manifest.get("tests", []), list):
         raise ValueError("tests debe ser una lista")
+    validate_tests(manifest.get("tests", []))
+    agents = manifest.get("agents", [])
+    if not isinstance(agents, list):
+        raise ValueError("agents debe ser una lista")
+    names = set()
+    for agent in agents:
+        if not isinstance(agent, dict) or not isinstance(agent.get("id"), str) or agent["id"] in names:
+            raise ValueError("Agentes sin identificador único")
+        names.add(agent["id"])
+        validate_tests(agent.get("tests", []))
+    if manifest.get("default_agent") and manifest["default_agent"] not in names:
+        raise ValueError("Agente predeterminado no anunciado")
+    return manifest
+
+
+def validate_tests(tests):
+    if not isinstance(tests, list):
+        raise ValueError("tests debe ser una lista")
     ids = set()
-    for test in manifest.get("tests", []):
+    for test in tests:
         if not isinstance(test, dict):
             raise ValueError("Cada test debe ser un objeto")
         ident = test.get("id")
@@ -37,7 +55,6 @@ def read_manifest(path):
             raise ValueError("cwd debe ser una ruta absoluta")
         if not 1 <= int(test.get("timeout", 120)) <= 3600:
             raise ValueError("timeout fuera de 1..3600 segundos")
-    return manifest
 
 
 class Runner:

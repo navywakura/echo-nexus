@@ -1,6 +1,9 @@
 """One source for command help, completion, and the documentation."""
 COMMANDS = [
     ("/devtest", "[list|all|ID]", "Ejecutar desarrollo; list muestra también informes sellados"),
+    ("/agent", "[list|ID|reload]", "Elegir el perfil ECHO del backend; independiente del neocórtex"),
+    ("/view", "coords on|off", "Coordenadas y brújula del visor humano"),
+    ("/cell", "X Y", "Inspeccionar una celda y centrar la vista; no informa al agente"),
     ("/backend", "MANIFEST.json", "Conectar el catálogo local de pruebas ECHO"),
     ("/connect", "api URL MODEL [KEY_ENV|@KEY_FILE]", "Conectar neocórtex con API compatible con chat completions"),
     ("/connect", "anthropic URL MODEL KEY_ENV", "Conectar neocórtex con la API Messages"),
@@ -18,6 +21,7 @@ COMMANDS = [
     ("/mcp", "close NAME", "Cerrar un servidor MCP iniciado por el arnés"),
     ("/watch", "PATH.jsonl|off", "Seguir decisiones existentes, en solo lectura"),
     ("/image", "PATH.png", "Mostrar una imagen en la terminal"),
+    ("/why", "", "Explicar las últimas decisiones con los registros recibidos de ECHO"),
     ("/tree", "", "Expandir o restaurar el panel de telemetría"),
     ("/demo", "", "Probar el visor con una animación sintética etiquetada"),
     ("/stop", "", "Cancelar la prueba o solicitud iniciada en esta TUI"),
